@@ -1,0 +1,38 @@
+op: paged_kv
+
+inputs:
+  k_cache: [num_blocks, block_size, H, D]
+  v_cache: [num_blocks, block_size, H, D]
+  k_new: [B, T_new, H, D]
+  v_new: [B, T_new, H, D]
+  slot_mapping: [B, T_new]
+
+outputs:
+  k_out: [num_blocks, block_size, H, D]
+  v_out: [num_blocks, block_size, H, D]
+
+dtype:
+  - fp16
+  - bf16
+
+device:
+  - cuda
+
+tolerance:
+  max_abs_error: 1e-5
+  mean_abs_error: 1e-6
+
+search_space:
+  BLOCK_SIZE: [64, 128, 256]
+  num_warps: [2, 4, 8]
+  num_stages: [2, 3, 4]
+
+benchmark:
+  warmup: 20
+  repeat: 100
+  metric: latency_us_p50
+
+promotion:
+  min_speedup: 1.05
+  max_variance: 0.10
+  regression_required: true

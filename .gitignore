@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Project runtime
+episodes/
+leaderboard/
+reports/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+
+# Checkpoints (ephemeral)
+checkpoints/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# CUDA build artifacts
+*.o
+*.so
+*.pyd
+*.dll
+nvcc_tmp/
+
+# Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+coverage.xml
+
+# Environment files
+.env
+.env.local

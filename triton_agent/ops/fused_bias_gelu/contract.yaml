@@ -1,0 +1,35 @@
+op: fused_bias_gelu
+
+inputs:
+  x: [B, T, D]
+  bias: [D]
+
+outputs:
+  y: [B, T, D]
+
+dtype:
+  - fp16
+  - bf16
+  - fp32
+
+device:
+  - cuda
+
+tolerance:
+  max_abs_error: 1e-4
+  mean_abs_error: 1e-5
+
+search_space:
+  BLOCK_SIZE: [64, 128, 256, 512]
+  num_warps: [1, 2, 4, 8]
+  num_stages: [2, 3, 4]
+
+benchmark:
+  warmup: 20
+  repeat: 100
+  metric: latency_us_p50
+
+promotion:
+  min_speedup: 1.05
+  max_variance: 0.10
+  regression_required: true

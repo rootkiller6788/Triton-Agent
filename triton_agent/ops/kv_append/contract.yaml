@@ -1,0 +1,38 @@
+op: kv_append
+
+inputs:
+  k_cache: [B, H, L, D]
+  v_cache: [B, H, L, D]
+  k_new: [B, H, T_new, D]
+  v_new: [B, H, T_new, D]
+  slot_mapping: [B, T_new]
+
+outputs:
+  k_out: [B, H, L, D]
+  v_out: [B, H, L, D]
+
+dtype:
+  - fp16
+  - bf16
+
+device:
+  - cuda
+
+tolerance:
+  max_abs_error: 1e-5
+  mean_abs_error: 1e-6
+
+search_space:
+  BLOCK_SIZE: [64, 128, 256]
+  num_warps: [2, 4, 8]
+  num_stages: [2, 3, 4]
+
+benchmark:
+  warmup: 20
+  repeat: 100
+  metric: latency_us_p50
+
+promotion:
+  min_speedup: 1.05
+  max_variance: 0.10
+  regression_required: true

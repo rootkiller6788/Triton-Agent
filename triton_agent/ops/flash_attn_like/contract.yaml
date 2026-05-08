@@ -1,0 +1,37 @@
+op: flash_attn_like
+
+inputs:
+  q: [B, H, T, D]
+  k: [B, H, S, D]
+  v: [B, H, S, D]
+
+outputs:
+  out: [B, H, T, D]
+
+dtype:
+  - fp16
+  - bf16
+
+device:
+  - cuda
+
+tolerance:
+  max_abs_error: 1e-2
+  mean_abs_error: 1e-3
+
+search_space:
+  BLOCK_M: [64, 128]
+  BLOCK_N: [64, 128]
+  BLOCK_D: [64, 128]
+  num_warps: [4, 8]
+  num_stages: [2, 3]
+
+benchmark:
+  warmup: 10
+  repeat: 50
+  metric: latency_us_p50
+
+promotion:
+  min_speedup: 1.05
+  max_variance: 0.10
+  regression_required: true

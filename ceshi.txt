@@ -1,0 +1,735 @@
+最终收束版：**Triton-agent / Apeinx OpEvolver 的完整架构**。
+
+核心目的定死：
+
+```text id="qgh16f"
+低成本开发高质量算子
+```
+
+不是完整 AIOS，不是端到端推理框架，不是复刻 CUDA Agent，不是任意算子生成器。你的原稿里“算子生成、编译、正确性验证、性能 Profile、MicroRL 调优、证据回放”这条链是对的，但“端到端 AI 推理全栈引擎”太大，需要降维成“算子开发闭环基础设施”。
+
+---
+
+# 1. 最终定位
+
+```text id="6q3lzb"
+Triton-agent / Apeinx OpEvolver
+=
+面向低成本高质量算子开发的轻量自优化智能体
+```
+
+完整定义：
+
+> **Triton-agent 是一个基于 Triton 的轻量算子自优化智能体。它在预定义算子框架内，通过算子契约、模板生成、编译、正确性验证、性能 Profile、MicroRL/Bandit 调优、最优变体晋升和证据回放，帮助个人或小团队低成本开发高质量 GPU 算子。**
+
+一句话英文：
+
+```text id="z0vwyf"
+A lightweight operator self-optimization agent for low-cost, high-quality Triton kernel development.
+```
+
+---
+
+# 2. 总体架构图
+
+```text id="h8fyag"
+┌──────────────────────────────────────────────────────────────────────┐
+│                         Triton-agent                                 │
+│              低成本高质量算子开发自优化智能体                         │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  0. Operator Registry 算子注册层                                      │
+├──────────────────────────────────────────────────────────────────────┤
+│  已注册算子族：                                                       │
+│  ├── RMSNorm                                                          │
+│  ├── RoPE                                                             │
+│  ├── SwiGLU / GeLU                                                     │
+│  ├── fused_bias_gelu                                                   │
+│  ├── quant_dequant                                                     │
+│  └── KV Append / 后置 Roadmap                                          │
+│                                                                      │
+│  每个算子不是自由生成，而是有固定五件套：                              │
+│  ├── contract.yaml       算子契约                                      │
+│  ├── reference.py        PyTorch 正确性基线                            │
+│  ├── templates/          Triton 模板族                                  │
+│  ├── verify.py           正确性验证                                    │
+│  └── benchmark.py        性能基准                                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  1. Op Contract 算子契约层                                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  定义 Agent 的活动边界：                                               │
+│  ├── op_name                                                          │
+│  ├── input tensor schema                                              │
+│  ├── output tensor schema                                             │
+│  ├── shape constraints                                                │
+│  ├── dtype constraints                                                │
+│  ├── device constraints                                               │
+│  ├── numerical tolerance                                              │
+│  ├── allowed template family                                          │
+│  ├── search space                                                     │
+│  ├── benchmark protocol                                               │
+│  └── promotion / rollback rule                                        │
+│                                                                      │
+│  核心原则：                                                           │
+│  Agent 不能乱写任意 CUDA/Triton，只能在 contract 规定空间内优化。       │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  2. Reference & TestCase 正确性基线层                                 │
+├──────────────────────────────────────────────────────────────────────┤
+│  PyTorch Reference                                                    │
+│  ├── 定义数学正确性                                                   │
+│  ├── 生成随机输入                                                     │
+│  ├── 生成边界输入                                                     │
+│  ├── 生成 dtype / shape case                                          │
+│  └── 作为 Triton candidate 的对照基线                                  │
+│                                                                      │
+│  输出：                                                               │
+│  ├── expected output                                                  │
+│  ├── tolerance rule                                                   │
+│  └── test suite                                                       │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  3. Candidate Generator 候选变体生成层                                │
+├──────────────────────────────────────────────────────────────────────┤
+│  输入：op contract + shape profile + device profile                   │
+│                                                                      │
+│  生成：                                                               │
+│  ├── Triton kernel variant                                            │
+│  ├── launch config                                                    │
+│  ├── BLOCK_SIZE / BLOCK_D                                             │
+│  ├── num_warps                                                        │
+│  ├── num_stages                                                       │
+│  ├── vectorize switch                                                 │
+│  ├── fusion switch                                                    │
+│  └── memory layout variant                                            │
+│                                                                      │
+│  生成方式：                                                           │
+│  ├── v0: 模板枚举 / grid search                                       │
+│  ├── v1: Best-of-N                                                    │
+│  ├── v2: Bandit 选择候选配置                                           │
+│  └── v3: GRPO-lite 轻量策略优化                                        │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  4. Compile 编译层                                                    │
+├──────────────────────────────────────────────────────────────────────┤
+│  主后端：Triton JIT Compile                                           │
+│  后置兜底：CUDA Extension                                             │
+│                                                                      │
+│  功能：                                                               │
+│  ├── 编译 candidate kernel                                            │
+│  ├── 捕获 compile error                                               │
+│  ├── 记录 compile time                                                │
+│  ├── 生成 compile log                                                 │
+│  └── 失败后进入 repair / retune                                       │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  5. Verifier 正确性验证层                                             │
+├──────────────────────────────────────────────────────────────────────┤
+│  所有 candidate 必须先过 correctness gate：                           │
+│                                                                      │
+│  ├── output 对齐 PyTorch reference                                    │
+│  ├── max_abs_error 检查                                               │
+│  ├── mean_abs_error 检查                                              │
+│  ├── NaN / Inf 检查                                                   │
+│  ├── shape / dtype 检查                                               │
+│  ├── boundary case 检查                                               │
+│  ├── deterministic check                                              │
+│  └── 未写区域污染检查，可选                                           │
+│                                                                      │
+│  规则：                                                               │
+│  ├── verify fail → reject                                             │
+│  └── verify pass → 才允许进入 profile                                  │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  6. Profiler 性能分析层                                               │
+├──────────────────────────────────────────────────────────────────────┤
+│  对通过验证的 candidate 做性能测量：                                  │
+│                                                                      │
+│  ├── latency p50 / p90 / p99                                          │
+│  ├── throughput                                                       │
+│  ├── memory peak                                                      │
+│  ├── bandwidth estimate                                               │
+│  ├── variance / stability                                             │
+│  ├── warmup rounds                                                    │
+│  ├── repeat rounds                                                    │
+│  └── baseline speedup                                                 │
+│                                                                      │
+│  输出 profile_result.json                                             │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  7. MicroRL / Bandit 调优层                                           │
+├──────────────────────────────────────────────────────────────────────┤
+│  目标：不是训练大模型，而是学习不同 shape/device 下的最优配置倾向。     │
+│                                                                      │
+│  State:                                                              │
+│  ├── op_name                                                          │
+│  ├── B / T / D / hidden_size                                          │
+│  ├── dtype                                                            │
+│  ├── GPU type                                                         │
+│  ├── baseline latency                                                 │
+│  └── historical best config                                           │
+│                                                                      │
+│  Action:                                                             │
+│  ├── template_id                                                      │
+│  ├── BLOCK_SIZE / BLOCK_D                                             │
+│  ├── num_warps                                                        │
+│  ├── num_stages                                                       │
+│  ├── vectorize                                                        │
+│  └── fusion_switch                                                    │
+│                                                                      │
+│  Reward:                                                             │
+│  ├── compile_pass                                                     │
+│  ├── verify_pass                                                      │
+│  ├── speedup                                                          │
+│  ├── stability                                                        │
+│  └── memory cost                                                      │
+│                                                                      │
+│  算法路线：                                                           │
+│  ├── v0: Best-of-N / Grid Search                                      │
+│  ├── v1: Contextual Bandit / UCB / Thompson Sampling                  │
+│  ├── v2: REINFORCE-lite                                               │
+│  └── v3: GRPO-lite                                                    │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  8. Selector / Promotion Gate 选择与晋升层                            │
+├──────────────────────────────────────────────────────────────────────┤
+│  只晋升满足条件的 variant：                                           │
+│                                                                      │
+│  ├── compile_pass == true                                             │
+│  ├── verify_pass == true                                              │
+│  ├── speedup >= min_speedup                                           │
+│  ├── variance <= threshold                                            │
+│  ├── memory_peak <= allowed_limit                                     │
+│  └── regression_pass == true                                          │
+│                                                                      │
+│  输出：                                                               │
+│  ├── best_variant                                                     │
+│  ├── best_config                                                      │
+│  ├── benchmark report                                                 │
+│  ├── promoted / rejected                                              │
+│  └── rollback target                                                  │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  9. Evidence / Replay 证据与回放层                                   │
+├──────────────────────────────────────────────────────────────────────┤
+│  每一轮优化都保存为 episode：                                         │
+│                                                                      │
+│  episodes/{op}/{episode_id}/                                         │
+│  ├── contract.yaml                                                    │
+│  ├── shape_profile.json                                               │
+│  ├── candidate_config.json                                            │
+│  ├── generated_kernel.py                                              │
+│  ├── compile_log.txt                                                  │
+│  ├── verify_result.json                                               │
+│  ├── profile_result.json                                              │
+│  ├── reward.json                                                      │
+│  ├── decision.json                                                    │
+│  └── replay.py                                                        │
+│                                                                      │
+│  功能：                                                               │
+│  ├── replay                                                           │
+│  ├── compare                                                          │
+│  ├── rollback                                                         │
+│  ├── leaderboard                                                      │
+│  └── shape-specific best config                                       │
+└──────────────────────────────────────────────────────────────────────┘
+
+                                 │
+                                 ▼
+
+┌──────────────────────────────────────────────────────────────────────┐
+│  10. Integration Adapter 集成适配层                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│  第一阶段只做轻集成：                                                 │
+│                                                                      │
+│  ├── Python API                                                       │
+│  ├── PyTorch wrapper                                                  │
+│  ├── benchmark CLI                                                    │
+│  ├── optional torch.compile comparison                                │
+│  └── optional vLLM/SGLang mock adapter                                │
+│                                                                      │
+│  不做完整推理框架，不做完整 Triton Inference Server，不做完整 AIOS。    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# 3. 核心运行链路
+
+最终闭环就是这一条：
+
+```text id="v4nctg"
+注册算子
+  ↓
+读取算子契约
+  ↓
+生成 Triton 候选变体
+  ↓
+编译
+  ↓
+正确性验证
+  ↓
+性能 Profile
+  ↓
+MicroRL / Bandit 更新选择策略
+  ↓
+选择最快且正确的 variant
+  ↓
+晋升到 leaderboard
+  ↓
+保存 episode
+  ↓
+可回放 / 可对比 / 可回滚
+```
+
+更工程化：
+
+```text id="j5xz1i"
+Operator Contract
+  → Candidate Variant
+  → Triton Compile
+  → Reference Verify
+  → Performance Profile
+  → Reward Score
+  → Policy Update
+  → Promote Best Variant
+  → Evidence Replay
+```
+
+---
+
+# 4. 和 AI 全栈的层级对应
+
+你的原始 AI 全栈里，3 层是 CUDA/ROCm、算子库、Profiling、Kernel Fusion，4 层是 Triton/CUDA Kernel、图优化、Memory Planning、ExecutionPlan IR，5 层是 PyTorch/vLLM/SGLang/TensorRT-LLM 等训练与推理 Runtime，8 层包含 Evidence/Replay，10 层包含 Agent/Harness，13 层包含 Benchmark、Regression、Rollback、Audit。Triton-agent 只切这些层，不再强行覆盖 0–13 全部。
+
+```text id="bbnj3y"
+Triton-agent 实际覆盖层级
+├── 3. AI 系统软件层
+│   └── Triton 算子、Profiling、Benchmark、Kernel Fusion 基础
+│
+├── 4. 编译器与执行优化层
+│   └── Triton Compile、模板变体、MicroRL/Bandit、自优化搜索
+│
+├── 5. 训练与推理 Runtime 层
+│   └── PyTorch wrapper、vLLM/SGLang mock adapter，后置真实集成
+│
+├── 8. Evidence / Replay 层
+│   └── episode、leaderboard、shape-specific config、replay.py
+│
+├── 10. Agent 与 Harness 层
+│   └── generate、compile、verify、profile、repair、select、promote
+│
+└── 13. 评测 / 治理 / 回滚层
+    └── correctness gate、benchmark、regression、rollback、audit
+```
+
+明确不做：
+
+```text id="nmjgnr"
+0. 物理材料
+1. 自研硬件
+2. 驱动开发
+6. 完整 AIOS
+7. 完整中间件平台
+9. 自研大模型训练
+11. 复杂前端
+12. 应用层产品
+```
+
+---
+
+# 5. 模块级架构
+
+```text id="vtr9hz"
+triton-agent/
+├── agent/
+│   ├── planner.py              # 根据 op/shape/device 决定搜索策略
+│   ├── generator.py            # 生成候选 Triton variant
+│   ├── repairer.py             # 根据 compile/verify/profile 反馈修复
+│   ├── selector.py             # 选择最佳 variant
+│   └── promoter.py             # 晋升 / 回滚
+│
+├── core/
+│   ├── registry.py             # 算子注册表
+│   ├── contract.py             # contract.yaml 解析
+│   ├── spec.py                 # shape/dtype/device profile
+│   ├── compiler.py             # Triton compile
+│   ├── verifier.py             # 正确性验证
+│   ├── profiler.py             # 性能测试
+│   ├── reward.py               # reward / score
+│   ├── replay.py               # 回放
+│   └── storage.py              # episode / leaderboard 存储
+│
+├── microrl/
+│   ├── state.py                # op + shape + dtype + device
+│   ├── action.py               # template/config 动作空间
+│   ├── bandit.py               # UCB / Thompson Sampling
+│   ├── reinforce_lite.py       # 后置
+│   ├── grpo_lite.py            # 后置
+│   └── trainer.py              # 策略更新
+│
+├── ops/
+│   ├── rmsnorm/
+│   │   ├── contract.yaml
+│   │   ├── reference.py
+│   │   ├── templates/
+│   │   │   ├── triton_v1.py
+│   │   │   └── triton_v2.py
+│   │   ├── verify.py
+│   │   └── benchmark.py
+│   │
+│   ├── rope/
+│   │   ├── contract.yaml
+│   │   ├── reference.py
+│   │   ├── templates/
+│   │   ├── verify.py
+│   │   └── benchmark.py
+│   │
+│   └── fused_bias_gelu/
+│       ├── contract.yaml
+│       ├── reference.py
+│       ├── templates/
+│       ├── verify.py
+│       └── benchmark.py
+│
+├── integrations/
+│   ├── pytorch_wrapper.py
+│   ├── torch_compile_compare.py
+│   ├── vllm_mock.py
+│   └── sglang_mock.py
+│
+├── episodes/
+│   └── .gitkeep
+│
+├── leaderboard/
+│   ├── leaderboard.sqlite
+│   └── best_configs.json
+│
+├── benchmarks/
+│   ├── bench_rmsnorm.py
+│   ├── bench_rope.py
+│   └── bench_fused_bias_gelu.py
+│
+├── tests/
+│   ├── test_contract.py
+│   ├── test_verifier.py
+│   ├── test_profiler.py
+│   ├── test_replay.py
+│   └── test_ops.py
+│
+├── cli.py
+├── pyproject.toml
+└── README.md
+```
+
+---
+
+# 6. 核心数据结构
+
+## Operator Contract
+
+```yaml id="lgcb8j"
+op: rmsnorm
+
+inputs:
+  x: [B, T, D]
+  weight: [D]
+
+outputs:
+  y: [B, T, D]
+
+dtype:
+  - fp16
+  - bf16
+
+device:
+  - cuda
+
+tolerance:
+  max_abs_error: 1e-3
+  mean_abs_error: 1e-4
+
+search_space:
+  BLOCK_D: [64, 128, 256, 512]
+  num_warps: [1, 2, 4, 8]
+  num_stages: [3, 4]
+  vectorize: [true, false]
+
+benchmark:
+  warmup: 20
+  repeat: 100
+  metric: latency_us_p50
+
+promotion:
+  min_speedup: 1.05
+  max_variance: 0.10
+  regression_required: true
+```
+
+---
+
+## State
+
+```python id="wrke9c"
+@dataclass
+class OpState:
+    op_name: str
+    B: int
+    T: int
+    D: int
+    dtype: str
+    device: str
+    gpu_name: str
+    baseline_latency_us: float
+    historical_best_config: dict | None
+```
+
+---
+
+## Action
+
+```python id="t49d9s"
+@dataclass
+class OpAction:
+    template_id: str
+    block_d: int
+    num_warps: int
+    num_stages: int
+    vectorize: bool
+    fusion: bool
+```
+
+---
+
+## Result
+
+```python id="0xgqs9"
+@dataclass
+class CandidateResult:
+    compile_pass: bool
+    verify_pass: bool
+    latency_us_p50: float
+    latency_us_p90: float
+    latency_us_p99: float
+    speedup: float
+    variance: float
+    memory_peak_mb: float
+    reward: float
+    promoted: bool
+```
+
+---
+
+# 7. Reward / Score 设计
+
+第一阶段不做大规模 PPO，只做 MicroRL / Bandit 级轻量优化。
+
+```python id="vk7c02"
+score = 0.0
+
+if compile_pass:
+    score += 0.2
+
+if verify_pass:
+    score += 0.6
+else:
+    score -= 1.0
+
+if speedup >= 1.05:
+    score += min(0.5, speedup - 1.0)
+
+if variance > 0.10:
+    score -= 0.2
+
+if memory_peak > baseline_memory * 1.10:
+    score -= 0.2
+
+if has_nan_or_inf:
+    score -= 1.0
+```
+
+注意：
+
+```text id="89cm2z"
+这里有 reward，但不是 CUDA Agent 那种大规模强化学习。
+v0/v1 只是用 reward 做候选选择和 Bandit 更新。
+```
+
+---
+
+# 8. MVP 范围
+
+第一阶段只做：
+
+```text id="umrrfs"
+单机
+单 GPU
+Python
+PyTorch reference
+Triton kernel
+3 个算子族
+自动编译
+自动验证
+自动 Profile
+Best-of-N / Bandit
+SQLite leaderboard
+JSONL episode
+replay.py
+CLI
+```
+
+第一阶段不做：
+
+```text id="g1gwz8"
+CUDA C++ extension
+完整 vLLM 替换
+完整 SGLang 替换
+Triton Inference Server
+完整 AIOS 调度
+多机多卡
+复杂 Web UI
+训练通用 CUDA Agent
+大规模 PPO
+```
+
+---
+
+# 9. 第一阶段算子优先级
+
+```text id="p5mhb7"
+P0:
+  RMSNorm
+  RoPE
+  fused_bias_gelu
+
+P1:
+  SwiGLU
+  quant_dequant
+  LayerNorm
+
+P2:
+  KV Append
+  RoPE + KV Append
+  simple matmul epilogue
+
+P3:
+  QuantMatMul
+  Paged KV
+  PagedAttention
+  FlashAttention-like kernel
+```
+
+原因：
+
+```text id="tvdsq1"
+P0 算子验证简单、实现难度可控、适合展示完整闭环。
+P1 开始有更多融合价值。
+P2 进入 LLM decode hot path。
+P3 才进入高难度推理核心路径。
+```
+
+---
+
+# 10. CLI 设计
+
+```bash id="hdkqzv"
+# 初始化算子
+triton-agent init rmsnorm
+
+# 优化某个 shape
+triton-agent optimize rmsnorm --shape B=8,T=2048,D=4096 --dtype fp16 --device cuda
+
+# 查看排行榜
+triton-agent leaderboard rmsnorm
+
+# 回放某次优化
+triton-agent replay episodes/rmsnorm/000042
+
+# 对比 baseline
+triton-agent compare rmsnorm --baseline torch --variant best
+
+# 导出最佳算子
+triton-agent export rmsnorm --shape B=8,T=2048,D=4096 --out dist/rmsnorm_best/
+```
+
+输出：
+
+```text id="npgh3g"
+Op: rmsnorm
+Shape: B=8,T=2048,D=4096
+Best Variant: rmsnorm_triton_v3
+Verify: passed
+Latency p50: 23.4 us
+Latency p90: 25.1 us
+Speedup: 1.18x
+Promoted: true
+Episode: episodes/rmsnorm/000042
+Replay: replay.py
+```
+
+---
+
+# 11. 最终架构一句话
+
+```text id="8o9g9o"
+Triton-agent 的完整架构 =
+算子注册表
++ 算子契约
++ PyTorch 正确性基线
++ Triton 候选变体生成
++ 编译器反馈
++ 正确性验证
++ 性能 Profile
++ MicroRL/Bandit 调优
++ 晋升/回滚
++ Evidence Replay
++ 轻量 PyTorch/Runtime 适配。
+```
+
+最硬定位：
+
+```text id="1rqz0b"
+Triton-agent 不是为了替代推理框架，
+而是为了让高质量算子开发变得更便宜、更稳定、更可复现。
+```
